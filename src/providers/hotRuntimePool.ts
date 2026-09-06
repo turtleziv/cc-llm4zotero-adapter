@@ -184,9 +184,17 @@ export function createHotRuntimeEntry(conversationKey: string): HotRuntimeEntry 
 export class HotRuntimePool {
   private readonly entries = new Map<string, HotRuntimeEntry>();
   private readonly graceMs: number;
+  // Local patch (2026-09-06, see .local_patch_version): absolute idle cap.
+  // `scheduleCloseIfIdle` only fires once every mount is released, so a
+  // conversation the host never releases (Zotero window closed, plugin
+  // reloaded) kept its claude.exe forever. `sweepIdle` closes any entry idle
+  // past `maxIdleMs` regardless of mounts; 0 disables the cap.
+  private readonly maxIdleMs: number;
+  private sweepTimer: NodeJS.Timeout | null = null;
 
-  constructor(options?: { graceMs?: number }) {
+  constructor(options?: { graceMs?: number; maxIdleMs?: number }) {
     this.graceMs = options?.graceMs ?? 3000;
+    this.maxIdleMs = Math.max(0, options?.maxIdleMs ?? 0);
   }
 
   ensure(conversationKey: string): HotRuntimeEntry {
@@ -222,6 +230,8 @@ export class HotRuntimePool {
   }
 
   scheduleCloseIfIdle(entry: HotRuntimeEntry, onExpire: (entry: HotRuntimeEntry) => void): void {
+    // A finished turn is activity for the idle cap even when mounts keep the entry alive.
+    entry.lastActivityAt = Date.now();
     if (entry.mounts.size > 0 || entry.currentTurn) return;
     if (entry.closeTimer) return;
     entry.closeRequested = true;
@@ -242,5 +252,55 @@ export class HotRuntimePool {
       entry.closeTimer = null;
     }
     return entry;
+  }
+
+  /** Mark activity on an entry (turn start); `now` is injectable for tests. */
+  touch(entry: HotRuntimeEntry, now: number = Date.now()): void {
+    entry.lastActivityAt = now;
+  }
+
+  /**
+   * Close every entry that has been idle for `maxIdleMs` or longer, mounted or
+   * not. Entries with a turn in flight are never swept. Returns the swept
+   * entries after `onExpire` ran for each of them.
+   */
+  sweepIdle(onExpire: (entry: HotRuntimeEntry) => void, now: number = Date.now()): HotRuntimeEntry[] {
+    if (this.maxIdleMs <= 0) return [];
+    const expired: HotRuntimeEntry[] = [];
+    for (const entry of Array.from(this.entries.values())) {
+      if (entry.currentTurn) continue;
+      if (now - entry.lastActivityAt < this.maxIdleMs) continue;
+      this.entries.delete(entry.conversationKey);
+      if (entry.closeTimer) {
+        clearTimeout(entry.closeTimer);
+        entry.closeTimer = null;
+      }
+      entry.closeRequested = true;
+      expired.push(entry);
+    }
+    for (const entry of expired) onExpire(entry);
+    return expired;
+  }
+
+  /** Run `sweepIdle` every `intervalMs`; the timer is unref'd so it never keeps the process alive. */
+  startSweeper(onExpire: (entry: HotRuntimeEntry) => void, intervalMs: number): void {
+    this.stopSweeper();
+    if (this.maxIdleMs <= 0 || intervalMs <= 0) return;
+    const timer = setInterval(() => {
+      this.sweepIdle(onExpire);
+    }, intervalMs);
+    timer.unref?.();
+    this.sweepTimer = timer;
+  }
+
+  stopSweeper(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
+  }
+
+  isSweeping(): boolean {
+    return this.sweepTimer !== null;
   }
 }

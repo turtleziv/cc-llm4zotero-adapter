@@ -879,6 +879,12 @@ function buildHotRuntimeSignature(
   });
 }
 
+// Local patch (2026-09-06, see .local_patch_version): a warm runtime the host
+// never releases is closed after this much idle time. Two hours keeps a paper
+// reading session warm across a coffee break; resume from disk covers the rest.
+const DEFAULT_HOT_RUNTIME_MAX_IDLE_MS = 2 * 60 * 60_000;
+const DEFAULT_HOT_RUNTIME_SWEEP_INTERVAL_MS = 60_000;
+
 export interface ClaudeAgentSdkRuntimeClientOptions {
   cwd?: string;
   additionalDirectories?: string[];
@@ -897,6 +903,15 @@ export interface ClaudeAgentSdkRuntimeClientOptions {
   modelProbeTimeoutMs?: number;
   /** Upper bound on SDK query teardown after a model probe. Tests override it. */
   modelProbeTeardownTimeoutMs?: number;
+  /**
+   * Local patch: close a warm runtime idle this long even if the host never
+   * released it. 0 disables the cap. Default 2 hours.
+   */
+  hotRuntimeMaxIdleMs?: number;
+  /** How often the idle sweeper runs. 0 disables the timer (tests call sweepIdleHotRuntimes directly). */
+  hotRuntimeSweepIntervalMs?: number;
+  /** Observer for expired runtimes; the bridge uses it for its log line. */
+  onHotRuntimeExpired?: (info: { conversationKey: string; idleMs: number; providerSessionId?: string }) => void;
 }
 
 export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
@@ -921,7 +936,7 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
   // before the plugin gives up on it.
   private readonly modelProbeTimeoutMsDefault = 15_000;
   private readonly modelProbeTeardownTimeoutMsDefault = 1_000;
-  private readonly hotRuntimePool = new HotRuntimePool({ graceMs: 5 * 60_000 });
+  private readonly hotRuntimePool: HotRuntimePool;
   private readonly usageSnapshots = new Map<string, { contextTokens: number; contextWindow?: number }>();
   private readonly runtimeClientInstanceId = `runtime-client-${Math.random().toString(36).slice(2, 10)}`;
   private readonly hotRuntimePoolInstanceId = `hot-pool-${Math.random().toString(36).slice(2, 10)}`;
@@ -1005,6 +1020,36 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
 
   constructor(options: ClaudeAgentSdkRuntimeClientOptions = {}) {
     this.options = options;
+    const maxIdleMs = Math.max(0, options.hotRuntimeMaxIdleMs ?? DEFAULT_HOT_RUNTIME_MAX_IDLE_MS);
+    this.hotRuntimePool = new HotRuntimePool({ graceMs: 5 * 60_000, maxIdleMs });
+    const sweepIntervalMs = options.hotRuntimeSweepIntervalMs ?? DEFAULT_HOT_RUNTIME_SWEEP_INTERVAL_MS;
+    this.hotRuntimePool.startSweeper((entry) => this.expireHotRuntime(entry), sweepIntervalMs);
+  }
+
+  /** Local patch: close hot runtimes idle past the cap now. Returns the swept conversation keys. */
+  sweepIdleHotRuntimes(now: number = Date.now()): string[] {
+    return this.hotRuntimePool
+      .sweepIdle((entry) => this.expireHotRuntime(entry, now), now)
+      .map((entry) => entry.conversationKey);
+  }
+
+  stopHotRuntimeSweeper(): void {
+    this.hotRuntimePool.stopSweeper();
+  }
+
+  private expireHotRuntime(entry: HotRuntimeEntry, now: number = Date.now()): void {
+    const idleMs = Math.max(0, now - entry.lastActivityAt);
+    void this.closeHotRuntime(entry);
+    this.usageSnapshots.delete(entry.conversationKey);
+    try {
+      this.options.onHotRuntimeExpired?.({
+        conversationKey: entry.conversationKey,
+        idleMs,
+        providerSessionId: entry.providerSessionId,
+      });
+    } catch {
+      // an observer failure must not break the sweep
+    }
   }
 
   async retainHotRuntime(request: RuntimeTurnRequest, mountId: string): Promise<void> {
@@ -1324,6 +1369,7 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
     const runId = randomUUID();
     const turn = createHotRuntimeTurn(runId);
     entry.currentTurn = turn;
+    this.hotRuntimePool.touch(entry);
     const providerSessionId = request.providerSessionId || entry.providerSessionId;
     const shouldInjectCompact = options?.autoCompactNeeded === true;
     turn.awaitingAutoCompact = shouldInjectCompact || /^\/compact(?:\s|$)/i.test(request.userMessage.trim());

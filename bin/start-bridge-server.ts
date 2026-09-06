@@ -77,6 +77,12 @@ function parseBoolean(value: string | undefined, defaultValue: boolean): boolean
   return defaultValue;
 }
 
+function parseNonNegativeNumber(value: string | undefined, defaultValue: number): number {
+  if (value === undefined || value.trim() === "") return defaultValue;
+  const n = Number(value.trim());
+  return Number.isFinite(n) && n >= 0 ? n : defaultValue;
+}
+
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 
 function parseSettingSources(value: string | undefined): SettingSource[] {
@@ -269,6 +275,13 @@ async function main() {
     mkdirSync(dir, { recursive: true });
   }
 
+  // Local patch (2026-09-06, see .local_patch_version): warm runtimes the plugin
+  // never releases are closed after this many idle minutes (0 = never).
+  const hotRuntimeMaxIdleMinutes = parseNonNegativeNumber(
+    getArg("hot-runtime-max-idle-minutes") ?? process.env.ADAPTER_HOT_RUNTIME_MAX_IDLE_MINUTES,
+    120,
+  );
+
   const runtimeClient = new ClaudeAgentSdkRuntimeClient({
     cwd: runtimeCwd,
     additionalDirectories,
@@ -278,7 +291,16 @@ async function main() {
     appendSystemPrompt: appendSystemPrompt || undefined,
     forwardFrontendModel,
     permissionMode: "default",
+    hotRuntimeMaxIdleMs: hotRuntimeMaxIdleMinutes * 60_000,
+    onHotRuntimeExpired: (info) => {
+      console.log(
+        `[cc-llm4zotero-adapter] hot runtime closed after ${Math.round(info.idleMs / 60_000)} min idle: ${info.conversationKey}`,
+      );
+    },
   });
+  console.log(
+    `[cc-llm4zotero-adapter] hot runtime max idle: ${hotRuntimeMaxIdleMinutes} min (0 = never; local patch, see .local_patch_version)`,
+  );
 
   const core = new ClaudeCodeRuntimeAdapter({
     runtimeClient,
