@@ -282,11 +282,22 @@ async function main() {
     120,
   );
 
+  // Local patch (2026-09-08, see .local_patch_version): this bridge always passes
+  // its own Zotero MCP server explicitly, so inheriting the host's user-scope
+  // servers only costs an npx + node pair each per conversation. Defaults on;
+  // pass `--strict-mcp-config false` (or ADAPTER_STRICT_MCP_CONFIG=false) to
+  // restore the upstream behaviour of inheriting every MCP source.
+  const strictMcpConfig = parseBoolean(
+    getArg("strict-mcp-config") ?? process.env.ADAPTER_STRICT_MCP_CONFIG,
+    true,
+  );
+
   const runtimeClient = new ClaudeAgentSdkRuntimeClient({
     cwd: runtimeCwd,
     additionalDirectories,
     defaultAllowedTools,
     settingSources,
+    strictMcpConfig,
     includePartialMessages: true,
     appendSystemPrompt: appendSystemPrompt || undefined,
     forwardFrontendModel,
@@ -333,6 +344,9 @@ async function main() {
   );
   console.log(`[cc-llm4zotero-adapter] state dir: ${stateDirResolved}`);
   console.log(`[cc-llm4zotero-adapter] settingSources: ${settingSources.join(",")}`);
+  console.log(
+    `[cc-llm4zotero-adapter] strictMcpConfig: ${strictMcpConfig} (local patch, see .local_patch_version)`,
+  );
   if (appendSystemPrompt) {
     console.log("[cc-llm4zotero-adapter] appendSystemPrompt: enabled");
   }

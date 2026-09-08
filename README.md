@@ -237,6 +237,7 @@ npm run serve:bridge
 | `--forward-frontend-model` | `ADAPTER_FORWARD_FRONTEND_MODEL` | Pass every non-empty frontend `metadata.model` value to Claude Code unchanged (default `true`). Claude Code resolves aliases, custom provider names, and future model families. |
 | `--log-file` | `ADAPTER_LOG_FILE` | Mirror bridge stdout/stderr to a file. Use `1` / `true` to write to `<state-dir>/bridge.log`. |
 | `--hot-runtime-max-idle-minutes` | `ADAPTER_HOT_RUNTIME_MAX_IDLE_MINUTES` | Close a warm Claude runtime that has been idle this long even if the plugin never released it (default `120`, `0` disables). Local patch, see `.local_patch_version`. |
+| `--strict-mcp-config` | `ADAPTER_STRICT_MCP_CONFIG` | Use only the MCP servers this bridge passes explicitly, ignoring the host's user-scope servers, project `.mcp.json`, plugins and agent frontmatter (default `true`; pass `false` to inherit them as upstream does). Local patch, see `.local_patch_version`. |
 
 Default additional readable directories:
 

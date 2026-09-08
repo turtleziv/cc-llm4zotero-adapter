@@ -6,8 +6,13 @@ version:        package.json 0.1.0（上游未打 tag，以 commit 為準）
 commit:         55fef74（上游基底）
 branch:         local-patches（本機分支，補丁 commit 在分支頂端；工作樹一律留在這條分支，bridge 重啟才載得到補丁）
 cloned:         2026-08-31（同日接成登入自啟服務，見 D:\Agent\000_Agent\knowledge\知識鏈使用說明書.md 表二）
-patched:        2026-09-06（hot runtime 絕對閒置上限；「本機修改」1–5；同日 22:57 重啟載入生效）
+patched:        2026-09-06（hot runtime 絕對閒置上限；「本機修改」1–5）＋2026-09-08（strictMcpConfig；「本機修改」6–9）
 verified:       2026-09-06（vitest 新增兩檔 10/10 綠；全套 123 條、紅 12 條與補丁前完全同一組，都是 Windows 路徑／scoped cwd 類；tsc src 與 bin 零錯）
+                2026-09-08（strictMcpConfig：新檔 4/4 綠；全量 before/after 對帳＝補丁前 111 綠 12 紅、補丁後 115 綠 12 紅，
+                **失敗集合逐條完全相同**、零新變紅、零消失的綠，只多新增那 4 條；tsc `-p tsconfig.json --noEmit` 零錯）
+loaded:         2026-09-06 22:57 重啟載入（補丁 1–5）；2026-09-08 19:5x 重啟載入（補丁 6–9）——活體驗證：真發一句話後
+                bridge 底下的 claude.exe 子程序只剩 conhost（改前是 conhost＋兩個 cmd→npx MCP server），全機 node.exe
+                前後都是 32；帶對話那顆仍有 --mcp-config 的 Zotero server 與 17 個 mcp__llm_for_zotero_* 工具
 
 ## 本機修改（同步時務必重做，不可被上游覆蓋）
 
@@ -22,6 +27,28 @@ verified:       2026-09-06（vitest 新增兩檔 10/10 綠；全套 123 條、�
    `ADAPTER_HOT_RUNTIME_MAX_IDLE_MINUTES`（預設 120，0 停用）；開機印「hot runtime max idle」一行，每次過期印「hot runtime closed after N min idle」。
 4. `README.md`〈Runtime / Environment Options〉表加一列。
 5. 測試（新檔，上游沒有）：`tests/hot-runtime-pool-idle-cap.spec.ts`（7 條）、`tests/sdk-runtime-client-idle-cap.spec.ts`（3 條）。
+6. `src/providers/claude-agent-sdk-runtime-client.ts`：選項加 `strictMcpConfig?: boolean`；`DEFAULT_BLOCKED_METADATA_KEYS`
+   加 `"strictMcpConfig"`（**純伺服器層，前端不得經 metadata 設定**——照 `settingSources` 的既有作法）；`buildQueryOptions`
+   回傳物件加 `strictMcpConfig: this.options.strictMcpConfig === true ? true : undefined`（沒開就是 undefined，會被既有的
+   `.filter(([, value]) => value !== undefined)` 濾掉，上游行為原封不動）。
+   刻意**不**動 `buildHotRuntimeSignature`：既然是伺服器層、單一程序內不會變，簽章不需要認它；也就不必為了測試把那個
+   模組私有函式 export 出來（少一條要跟上游同步的修改）。
+7. `bin/start-bridge-server.ts`：旗標 `--strict-mcp-config`／環境變數 `ADAPTER_STRICT_MCP_CONFIG`（沿用既有 `parseBoolean`，
+   **預設 true**；關掉用 `--strict-mcp-config false`）；傳進 `ClaudeAgentSdkRuntimeClient`；開機印
+   「strictMcpConfig: <值> (local patch, see .local_patch_version)」一行。
+8. `README.md`〈Runtime / Environment Options〉表加一列。
+9. 測試（新檔，上游沒有）：`tests/strict-mcp-config.spec.ts`（4 條：開了要傳到 SDK／沒開要整個不存在／metadata 塞不進來／
+   明傳的 Zotero MCP 與 strict 開關並存）。
+
+原因（6–9）：bridge 每輪都用 `--mcp-config` 明傳自己的 Zotero MCP（http `127.0.0.1:23119/llm-for-zotero/mcp`）＋
+`--allowedTools` 列 18 個 `mcp__llm_for_zotero_*`，但 `--setting-sources=user,project,local` 讓它同時繼承宿主 user 層的
+MCP server。本機是 `filesystem`（範圍 `C:\Users\user\Github`）、`playwright`、`cloudflare`——對讀論文毫無用處，前兩個是 stdio、
+各起一組 cmd→npx→node＝**每個對話多 4 個 node**。`strictMcpConfig` 只留明傳的那個，正好保住 Zotero 工具、擋掉其餘。
+量過的收益：每對話少 4 個 node、無頭實測啟動 5.61s→4.91s；context 只省約 860 token（2.3%，MCP 工具是延遲載入、
+context 裡只有名字）。**檔案式設定救不了**（試過並否決）：`deniedMcpServers` 機制本身有效，但每輪 session 的 cwd 是
+`<runtimeCwd>\profile-<id>\scopes\<type>\<scopeId>\conversations\<對話key>`、每個對話新建，專案層 settings 只從 cwd 本身取、
+不往祖先找；`--setting-sources project` 則會連宿主 21 條 deny 權限、10 個 hook 與 68 個 skill 一起丟掉。
+成因、三組隔離實測與否決理由：知識鏈使用說明書〈已知限制與坑〉第 10 條。
 
 原因：上游的 pool 只在前端 release 掉所有 mount 之後 5 分鐘才收 claude.exe；Zotero 關窗或外掛重載時前端不送 release，
 對話永遠不過期——一週累積 8 個 Agent SDK session（96 個程序、claude.exe 工作集 2.2 GB）。實測殺掉一個 claude.exe 後
@@ -31,8 +58,8 @@ verified:       2026-09-06（vitest 新增兩檔 10/10 綠；全套 123 條、�
 
 ## 上游同步步驟
 
-在 `local-patches` 分支：`git fetch origin` → `git rebase origin/main`（補丁 commit 重放到新上游上；衝突以上面 1–3 項重做）。
+在 `local-patches` 分支：`git fetch origin` → `git rebase origin/main`（補丁 commit 重放到新上游上；衝突以上面 1–3、6–7 項重做）。
 `main` 只跟上游、不放補丁；工作樹一律留在 `local-patches`。rebase 後跑
-`npx vitest run tests/hot-runtime-pool-idle-cap.spec.ts tests/sdk-runtime-client-idle-cap.spec.ts` 全綠、
-`npx tsc -p tsconfig.json --noEmit` 零錯，才重啟 bridge（表二換手四步）。補丁生效的證據：`bridge.out.log` 開機行
-「hot runtime max idle: 120 min」。
+`npx vitest run tests/hot-runtime-pool-idle-cap.spec.ts tests/sdk-runtime-client-idle-cap.spec.ts tests/strict-mcp-config.spec.ts` 全綠、
+`npx tsc -p tsconfig.json --noEmit` 零錯，才重啟 bridge（表二換手四步）。補丁生效的證據＝`bridge.out.log` 兩行開機訊息：
+「hot runtime max idle: 120 min」與「strictMcpConfig: true」。

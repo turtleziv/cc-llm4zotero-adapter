@@ -236,6 +236,8 @@ const DEFAULT_BLOCKED_METADATA_KEYS = new Set<string>([
   "maxTurns",
   "resume",
   "settingSources",
+  // Local patch (2026-09-08): server-level switch, never frontend-settable.
+  "strictMcpConfig",
   "runtimeRequest",
   "runtimeCwdRelative",
   "model",
@@ -890,6 +892,13 @@ export interface ClaudeAgentSdkRuntimeClientOptions {
   additionalDirectories?: string[];
   defaultAllowedTools?: string[];
   settingSources?: SettingSource[];
+  /**
+   * Local patch (2026-09-08, see .local_patch_version): only use the MCP servers
+   * this bridge passes explicitly, ignoring the host's user-scope servers,
+   * project .mcp.json, plugins and agent frontmatter. Server-level only - it is
+   * blocked as request metadata so a frontend cannot flip it per conversation.
+   */
+  strictMcpConfig?: boolean;
   permissionMode?: PermissionMode;
   includePartialMessages?: boolean;
   maxTurns?: number;
@@ -2338,6 +2347,10 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
         hooks: localPdfReadHooks ?? metadata.hooks,
         mcpServers,
         settingSources: effectiveSettingSources,
+        // Local patch (2026-09-08, see .local_patch_version): undefined when the
+        // server has not opted in, so the key drops out of the options entirely
+        // and upstream behaviour is untouched.
+        strictMcpConfig: this.options.strictMcpConfig === true ? true : undefined,
         permissionMode: effectivePermissionMode,
         allowDangerouslySkipPermissions:
           effectivePermissionMode === "bypassPermissions" ? true : undefined,
