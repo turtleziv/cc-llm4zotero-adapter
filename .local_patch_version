@@ -3,16 +3,30 @@
 upstream_repo:  https://github.com/jianghao-zhang/cc-llm4zotero-adapter
 upstream_path:  （整個 repo）
 version:        package.json 0.1.0（上游未打 tag，以 commit 為準）
-commit:         55fef74（上游基底）
+commit:         ea7b374（上游基底；2026-09-13 從 55fef74 rebase 上來，多了上游 PR #9：permission mode 目錄、structured completion、plan／task 事件）
 branch:         local-patches（本機分支，補丁 commit 在分支頂端；工作樹一律留在這條分支，bridge 重啟才載得到補丁）
 cloned:         2026-08-31（同日接成登入自啟服務，見 D:\Agent\000_Agent\knowledge\知識鏈使用說明書.md 表二）
 patched:        2026-09-06（hot runtime 絕對閒置上限；「本機修改」1–5）＋2026-09-08（strictMcpConfig；「本機修改」6–9）
-verified:       2026-09-06（vitest 新增兩檔 10/10 綠；全套 123 條、紅 12 條與補丁前完全同一組，都是 Windows 路徑／scoped cwd 類；tsc src 與 bin 零錯）
+synced:         2026-09-13（55fef74 → ea7b374。觸發＝llm-for-zotero 09-11 被 Zotero 自動升到 v3.9.6，它的 release note 要 bridge 使用者同步更新
+                adapter；舊 bridge 的 healthz 沒有 permission_modes_v1／structured_completion_v1，外掛的權限選單會報錯。補丁 commit
+                rebase 前 3172e44／d33bd58、後 29f0d18／fb3b5df；range-diff：補丁 1 逐字相同，補丁 2 只差上下文）
+verified:       2026-09-13（rebase 到 ea7b374：全量 before/after 對帳＝前 115 綠 12 紅、後 122 綠 12 紅，失敗集合逐條相同、零新變紅，
+                多出的 8 條是上游 PR #9 的測試、全綠；補丁三檔＋上游新測試檔共 23/23 綠；tsc `-p tsconfig.json --noEmit` 零錯；
+                另在 scratch clone 先試跑一次，結果逐條一致）——**最新的放第一行**：check_skill_versions.py 只讀這一行的日期
                 2026-09-08（strictMcpConfig：新檔 4/4 綠；全量 before/after 對帳＝補丁前 111 綠 12 紅、補丁後 115 綠 12 紅，
                 **失敗集合逐條完全相同**、零新變紅、零消失的綠，只多新增那 4 條；tsc `-p tsconfig.json --noEmit` 零錯）
-loaded:         2026-09-06 22:57 重啟載入（補丁 1–5）；2026-09-08 19:5x 重啟載入（補丁 6–9）——活體驗證：真發一句話後
+                2026-09-06（vitest 新增兩檔 10/10 綠；全套 123 條、紅 12 條與補丁前完全同一組，都是 Windows 路徑／scoped cwd 類；tsc src 與 bin 零錯）
+loaded:         2026-09-13 20:04 重啟載入（ea7b374＋補丁 1–9；Kevin 在自己的 PowerShell `taskkill /PID 19288 /T /F` → 跑自啟 .ps1）——
+                埠主 14844 → 27696；兩行補丁開機訊息都在；healthz 多出 permission_modes_v1／structured_completion_v1；
+                /permission-modes 回 6 種，用外掛 v3.9.6 自己的 permissionModes.ts 對 live bridge 實跑＝選項載入、default 維持、無警告；
+                /structured-completion 實呼一次 4 秒回 JSON，一次性程序沒留下。Zotero 真發一句：該輪 claude.exe 帶 --mcp-config
+                （allowedTools 有 5 個 mcp__llm_for_zotero_profile_7e4acfc8__* 讀取類工具，v3.9.5 時是 17 個 mcp__llm_for_zotero_*）
+                ＋--strict-mcp-config＋--permission-mode default，子程序只剩 conhost；trace resolvedPermissionMode＝default。
+                v3.9.6 開面板會先預熱對話程序（這次 2 顆預熱＋1 顆 resume，都不帶 MCP，真正發問時換成帶 MCP 的那顆）
+                2026-09-08 19:5x 重啟載入（補丁 6–9）——活體驗證：真發一句話後
                 bridge 底下的 claude.exe 子程序只剩 conhost（改前是 conhost＋兩個 cmd→npx MCP server），全機 node.exe
                 前後都是 32；帶對話那顆仍有 --mcp-config 的 Zotero server 與 17 個 mcp__llm_for_zotero_* 工具
+                2026-09-06 22:57 重啟載入（補丁 1–5）
 
 ## 本機修改（同步時務必重做，不可被上游覆蓋）
 
@@ -30,7 +44,8 @@ loaded:         2026-09-06 22:57 重啟載入（補丁 1–5）；2026-09-08 19:
 6. `src/providers/claude-agent-sdk-runtime-client.ts`：選項加 `strictMcpConfig?: boolean`；`DEFAULT_BLOCKED_METADATA_KEYS`
    加 `"strictMcpConfig"`（**純伺服器層，前端不得經 metadata 設定**——照 `settingSources` 的既有作法）；`buildQueryOptions`
    回傳物件加 `strictMcpConfig: this.options.strictMcpConfig === true ? true : undefined`（沒開就是 undefined，會被既有的
-   `.filter(([, value]) => value !== undefined)` 濾掉，上游行為原封不動）。
+   `.filter(([, value]) => value !== undefined)` 濾掉，上游行為原封不動）。2026-09-13 起它下兩行是上游 PR #9 加的
+   `allowDangerouslySkipPermissions`（中間隔著 `permissionMode`），rebase 時相鄰但不衝突。
    刻意**不**動 `buildHotRuntimeSignature`：既然是伺服器層、單一程序內不會變，簽章不需要認它；也就不必為了測試把那個
    模組私有函式 export 出來（少一條要跟上游同步的修改）。
 7. `bin/start-bridge-server.ts`：旗標 `--strict-mcp-config`／環境變數 `ADAPTER_STRICT_MCP_CONFIG`（沿用既有 `parseBoolean`，
@@ -58,8 +73,14 @@ context 裡只有名字）。**檔案式設定救不了**（試過並否決）�
 
 ## 上游同步步驟
 
+**什麼時候要同步**：llm-for-zotero 會被 Zotero 自動更新，外掛新版常要求 bridge 帶新 capability（09-11 升 v3.9.6 就是這樣，
+bridge 落後兩天沒人發現）。外掛 release note 點名 adapter 時，或手動跑
+`python 000_Agent/scripts/check_skill_versions.py --skills-dir "D:/Working Program" --patch-prs`（在 D:\Agent 跑）判「落後」時同步；
+`--patch-prs` 也會列出動到補丁檔的上游 PR。
+
 在 `local-patches` 分支：`git fetch origin` → `git rebase origin/main`（補丁 commit 重放到新上游上；衝突以上面 1–3、6–7 項重做）。
 `main` 只跟上游、不放補丁；工作樹一律留在 `local-patches`。rebase 後跑
 `npx vitest run tests/hot-runtime-pool-idle-cap.spec.ts tests/sdk-runtime-client-idle-cap.spec.ts tests/strict-mcp-config.spec.ts` 全綠、
 `npx tsc -p tsconfig.json --noEmit` 零錯，才重啟 bridge（表二換手四步）。補丁生效的證據＝`bridge.out.log` 兩行開機訊息：
-「hot runtime max idle: 120 min」與「strictMcpConfig: true」。
+「hot runtime max idle: 120 min」與「strictMcpConfig: true」。自啟腳本是冪等的（埠上有健康服務就直接退出），
+所以換手後還要證明舊程序真的換掉了：19787 的埠主 PID 要換、healthz 的 capabilities 要帶上游新加的項目。
